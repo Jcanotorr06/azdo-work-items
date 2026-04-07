@@ -1,0 +1,40 @@
+{
+  "name": "azdo-work-items",
+  "version": "0.1.0",
+  "description": "CLI tool for exporting Azure DevOps work items",
+  "main": "dist/index.js",
+  "bin": {
+    "azdo-work-items": "dist/index.js"
+  },
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "start": "tsc && node dist/index.js",
+    "build": "tsc",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts"
+  ],
+  "keywords": [
+    "azure devops",
+    "work items",
+    "cli"
+  ],
+  "author": "Joseph Cano",
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.4.0",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "execa": "^9.6.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
