@@ -1,10 +1,21 @@
-import { Command } from "commander";
+#!/usr/bin/env node
 
-const program = new Command();
+import chalk from "chalk";
+import { createProgram } from "./cli.js";
+import { CliError, formatCliError } from "./errors.js";
 
-program
-  .name("azdo-work-items")
-  .description("CLI tool for exporting Azure DevOps work items")
-  .version("0.1.0");
+const program = createProgram();
 
-program.parse(process.argv);
+try {
+	await program.parseAsync(process.argv);
+} catch (error) {
+	const { message, hints } = formatCliError(error);
+
+	console.error(chalk.red(message));
+
+	for (const hint of hints) {
+		console.error(chalk.dim(hint));
+	}
+
+	process.exit(error instanceof CliError ? error.exitCode : 1);
+}
