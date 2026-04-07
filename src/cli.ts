@@ -11,10 +11,15 @@ import {
 import { CliError } from "./errors.js";
 import { renderJson } from "./exporters/json.js";
 import { renderMarkdown } from "./exporters/markdown.js";
-import { confirmOverwrite, promptForExportOptions } from "./prompts.js";
+import {
+	confirmOverwrite,
+	normalizeOutputFormat,
+	promptForMissingInputs,
+} from "./prompts.js";
 import type {
 	AzureFields,
 	AzureWorkItem,
+	ExportInputs,
 	ExportResult,
 	ExportWorkItem,
 	OutputFormat,
@@ -30,7 +35,7 @@ type CliDependencies = {
 	confirmOverwrite: typeof confirmOverwrite;
 	cwd: () => string;
 	now: () => Date;
-	promptForExportOptions: typeof promptForExportOptions;
+	promptForMissingInputs: typeof promptForMissingInputs;
 	writeFile: typeof fs.writeFile;
 };
 
@@ -44,7 +49,7 @@ const defaultDependencies: CliDependencies = {
 	confirmOverwrite,
 	cwd: () => process.cwd(),
 	now: () => new Date(),
-	promptForExportOptions,
+	promptForMissingInputs,
 	writeFile: fs.writeFile,
 };
 
@@ -145,9 +150,12 @@ async function ensureWritableTarget(
 }
 
 export async function runExportWorkflow(
-	queryId: string,
+	inputs: ExportInputs,
 	dependencies: CliDependencies = defaultDependencies,
 ): Promise<void> {
+	const exportInputs = await dependencies.promptForMissingInputs(inputs);
+	const queryId = exportInputs.queryId;
+
 	await dependencies.azure.ensureAzureCliAvailable();
 
 	const refs = await dependencies.azure.queryWorkItems(queryId);
@@ -164,16 +172,6 @@ export async function runExportWorkflow(
 		items.push(normalizeWorkItem(workItem));
 	}
 
-	const exportOptions = await dependencies.promptForExportOptions();
-	const targetPath = path.join(dependencies.cwd(), exportOptions.fileName);
-
-	await ensureWritableTarget(
-		dependencies.access,
-		targetPath,
-		exportOptions.fileName,
-		dependencies.confirmOverwrite,
-	);
-
 	const result: ExportResult = {
 		exportedAt: dependencies.now().toISOString(),
 		itemCount: items.length,
@@ -181,11 +179,29 @@ export async function runExportWorkflow(
 		queryId,
 	};
 
-	await dependencies.writeFile(
+	const renderedOutput = renderOutput(result, exportInputs.format);
+
+	if (exportInputs.outputTarget === "inline") {
+		console.log(renderedOutput);
+		return;
+	}
+
+	if (!exportInputs.fileName) {
+		throw new CliError(
+			"A file name is required when writing output to a file.",
+		);
+	}
+
+	const targetPath = path.join(dependencies.cwd(), exportInputs.fileName);
+
+	await ensureWritableTarget(
+		dependencies.access,
 		targetPath,
-		renderOutput(result, exportOptions.format),
-		"utf8",
+		exportInputs.fileName,
+		dependencies.confirmOverwrite,
 	);
+
+	await dependencies.writeFile(targetPath, renderedOutput, "utf8");
 
 	console.log(
 		chalk.green(`Exported ${items.length} work items to ${targetPath}`),
@@ -199,8 +215,28 @@ export function createProgram(
 		.name("azdo-work-items")
 		.description("CLI tool for exporting Azure DevOps work items")
 		.version("0.1.0")
-		.argument("<queryId>", "Azure DevOps query ID")
-		.action(async (queryId: string) => {
-			await runExportWorkflow(queryId, dependencies);
+		.argument("[queryId]", "Azure DevOps query ID")
+		.option("--queryId <queryId>", "Azure DevOps query ID")
+		.option("--format <format>", "Output format: json or md")
+		.option(
+			"--inline",
+			"Print the export in the terminal instead of writing a file",
+		)
+		.option(
+			"--fileName <fileName>",
+			"Output file name in the current directory",
+		)
+		.action(async (queryId: string | undefined, options) => {
+			await runExportWorkflow(
+				{
+					fileName: options.fileName,
+					format: options.format
+						? normalizeOutputFormat(options.format)
+						: undefined,
+					inline: options.inline,
+					queryId: options.queryId ?? queryId,
+				},
+				dependencies,
+			);
 		});
 }

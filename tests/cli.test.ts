@@ -9,7 +9,11 @@ import {
 import { CliError } from "../src/errors.js";
 import { renderJson } from "../src/exporters/json.js";
 import { renderMarkdown } from "../src/exporters/markdown.js";
-import { normalizeFileName } from "../src/prompts.js";
+import {
+	normalizeFileName,
+	normalizeOutputFormat,
+	normalizeQueryId,
+} from "../src/prompts.js";
 import type { AzureWorkItem } from "../src/types/index.js";
 
 describe("extractQueryWorkItemRefs", () => {
@@ -142,12 +146,33 @@ describe("normalizeFileName", () => {
 	});
 });
 
+describe("normalizeQueryId", () => {
+	it("trims the query id", () => {
+		expect(normalizeQueryId("  abc-123  ")).toBe("abc-123");
+	});
+
+	it("rejects an empty query id", () => {
+		expect(() => normalizeQueryId("   ")).toThrow(CliError);
+	});
+});
+
+describe("normalizeOutputFormat", () => {
+	it("accepts json and md", () => {
+		expect(normalizeOutputFormat("json")).toBe("json");
+		expect(normalizeOutputFormat("MD")).toBe("md");
+	});
+
+	it("rejects unsupported output formats", () => {
+		expect(() => normalizeOutputFormat("csv")).toThrow(CliError);
+	});
+});
+
 describe("runExportWorkflow", () => {
 	const access = vi.fn();
 	const queryWorkItems = vi.fn();
 	const getWorkItemDetails = vi.fn();
 	const ensureAzureCliAvailable = vi.fn();
-	const promptForExportOptions = vi.fn();
+	const promptForMissingInputs = vi.fn();
 	const confirmOverwrite = vi.fn();
 	const writeFile = vi.fn();
 	const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -162,7 +187,7 @@ describe("runExportWorkflow", () => {
 		confirmOverwrite,
 		cwd: () => "C:/workspace",
 		now: () => new Date("2026-04-06T22:15:00.000Z"),
-		promptForExportOptions,
+		promptForMissingInputs,
 		writeFile,
 	};
 
@@ -174,6 +199,12 @@ describe("runExportWorkflow", () => {
 	});
 
 	it("writes a JSON export after fetching all work items", async () => {
+		promptForMissingInputs.mockResolvedValue({
+			fileName: "out.json",
+			format: "json",
+			outputTarget: "file",
+			queryId: "abc",
+		});
 		queryWorkItems.mockResolvedValue([{ id: 1 }, { id: 2 }]);
 		getWorkItemDetails
 			.mockResolvedValueOnce({
@@ -192,13 +223,9 @@ describe("runExportWorkflow", () => {
 				},
 				id: 2,
 			});
-		promptForExportOptions.mockResolvedValue({
-			fileName: "out.json",
-			format: "json",
-		});
+		await runExportWorkflow({ queryId: "abc" }, deps);
 
-		await runExportWorkflow("abc", deps);
-
+		expect(promptForMissingInputs).toHaveBeenCalledWith({ queryId: "abc" });
 		expect(ensureAzureCliAvailable).toHaveBeenCalledOnce();
 		expect(queryWorkItems).toHaveBeenCalledWith("abc");
 		expect(getWorkItemDetails).toHaveBeenNthCalledWith(1, 1);
@@ -212,11 +239,17 @@ describe("runExportWorkflow", () => {
 	});
 
 	it("returns early when the query has no work items", async () => {
+		promptForMissingInputs.mockResolvedValue({
+			fileName: "out.json",
+			format: "json",
+			outputTarget: "file",
+			queryId: "empty-query",
+		});
 		queryWorkItems.mockResolvedValue([]);
 
-		await runExportWorkflow("empty-query", deps);
+		await runExportWorkflow({ queryId: "empty-query" }, deps);
 
-		expect(promptForExportOptions).not.toHaveBeenCalled();
+		expect(promptForMissingInputs).toHaveBeenCalledOnce();
 		expect(writeFile).not.toHaveBeenCalled();
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("No work items were found"),
@@ -224,29 +257,64 @@ describe("runExportWorkflow", () => {
 	});
 
 	it("fails the whole export when a work item fetch fails", async () => {
+		promptForMissingInputs.mockResolvedValue({
+			fileName: "out.json",
+			format: "json",
+			outputTarget: "file",
+			queryId: "abc",
+		});
 		queryWorkItems.mockResolvedValue([{ id: 1 }, { id: 2 }]);
 		getWorkItemDetails
 			.mockResolvedValueOnce({ id: 1 })
 			.mockRejectedValueOnce(new CliError("boom"));
 
-		await expect(runExportWorkflow("abc", deps)).rejects.toThrow("boom");
-		expect(promptForExportOptions).not.toHaveBeenCalled();
+		await expect(runExportWorkflow({ queryId: "abc" }, deps)).rejects.toThrow(
+			"boom",
+		);
 	});
 
 	it("rejects overwrite refusal", async () => {
-		queryWorkItems.mockResolvedValue([{ id: 1 }]);
-		getWorkItemDetails.mockResolvedValue({ id: 1 });
-		promptForExportOptions.mockResolvedValue({
+		promptForMissingInputs.mockResolvedValue({
 			fileName: "out.json",
 			format: "json",
+			outputTarget: "file",
+			queryId: "abc",
 		});
+		queryWorkItems.mockResolvedValue([{ id: 1 }]);
+		getWorkItemDetails.mockResolvedValue({ id: 1 });
 		access.mockResolvedValue(undefined);
 		confirmOverwrite.mockResolvedValue(false);
 
-		await expect(runExportWorkflow("abc", deps)).rejects.toThrow(
+		await expect(runExportWorkflow({ queryId: "abc" }, deps)).rejects.toThrow(
 			"Export cancelled",
 		);
 		expect(writeFile).not.toHaveBeenCalled();
+	});
+
+	it("prints inline output without writing a file", async () => {
+		promptForMissingInputs.mockResolvedValue({
+			format: "json",
+			outputTarget: "inline",
+			queryId: "abc",
+		});
+		queryWorkItems.mockResolvedValue([{ id: 1 }]);
+		getWorkItemDetails.mockResolvedValue({
+			fields: {
+				"System.State": "Active",
+				"System.Title": "One",
+				"System.WorkItemType": "Bug",
+			},
+			id: 1,
+		});
+
+		await runExportWorkflow({ queryId: "abc", inline: true }, deps);
+
+		expect(access).not.toHaveBeenCalled();
+		expect(confirmOverwrite).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"queryId": "abc"'),
+		);
 	});
 });
 
@@ -254,6 +322,12 @@ describe("createProgram", () => {
 	it("parses the positional query id and runs the workflow action", async () => {
 		const ensureAzureCliAvailable = vi.fn().mockResolvedValue(undefined);
 		const queryWorkItems = vi.fn().mockResolvedValue([]);
+		const promptForMissingInputs = vi.fn().mockResolvedValue({
+			fileName: "work-items.json",
+			format: "json",
+			outputTarget: "file",
+			queryId: "query-123",
+		});
 		const program = createProgram({
 			access: vi
 				.fn()
@@ -268,7 +342,7 @@ describe("createProgram", () => {
 			confirmOverwrite: vi.fn(),
 			cwd: () => process.cwd(),
 			now: () => new Date(),
-			promptForExportOptions: vi.fn(),
+			promptForMissingInputs,
 			writeFile: vi.fn(),
 		});
 
@@ -278,5 +352,104 @@ describe("createProgram", () => {
 
 		expect(ensureAzureCliAvailable).toHaveBeenCalledOnce();
 		expect(queryWorkItems).toHaveBeenCalledWith("query-123");
+		expect(promptForMissingInputs).toHaveBeenCalledWith({
+			fileName: undefined,
+			format: undefined,
+			inline: undefined,
+			queryId: "query-123",
+		});
+	});
+
+	it("prefers flags and allows omitting the positional query id", async () => {
+		const ensureAzureCliAvailable = vi.fn().mockResolvedValue(undefined);
+		const queryWorkItems = vi.fn().mockResolvedValue([]);
+		const promptForMissingInputs = vi.fn().mockResolvedValue({
+			fileName: "export.md",
+			format: "md",
+			outputTarget: "file",
+			queryId: "flag-query",
+		});
+		const program = createProgram({
+			access: vi
+				.fn()
+				.mockRejectedValue(
+					Object.assign(new Error("missing"), { code: "ENOENT" }),
+				),
+			azure: {
+				ensureAzureCliAvailable,
+				getWorkItemDetails: vi.fn(),
+				queryWorkItems,
+			},
+			confirmOverwrite: vi.fn(),
+			cwd: () => process.cwd(),
+			now: () => new Date(),
+			promptForMissingInputs,
+			writeFile: vi.fn(),
+		});
+
+		await program.parseAsync(
+			[
+				"node",
+				"azdo-work-items",
+				"--queryId",
+				"flag-query",
+				"--format",
+				"md",
+				"--fileName",
+				"export.md",
+			],
+			{
+				from: "node",
+			},
+		);
+
+		expect(promptForMissingInputs).toHaveBeenCalledWith({
+			fileName: "export.md",
+			format: "md",
+			inline: undefined,
+			queryId: "flag-query",
+		});
+		expect(queryWorkItems).toHaveBeenCalledWith("flag-query");
+	});
+
+	it("supports inline output from flags", async () => {
+		const ensureAzureCliAvailable = vi.fn().mockResolvedValue(undefined);
+		const queryWorkItems = vi.fn().mockResolvedValue([]);
+		const promptForMissingInputs = vi.fn().mockResolvedValue({
+			format: "json",
+			outputTarget: "inline",
+			queryId: "flag-query",
+		});
+		const program = createProgram({
+			access: vi
+				.fn()
+				.mockRejectedValue(
+					Object.assign(new Error("missing"), { code: "ENOENT" }),
+				),
+			azure: {
+				ensureAzureCliAvailable,
+				getWorkItemDetails: vi.fn(),
+				queryWorkItems,
+			},
+			confirmOverwrite: vi.fn(),
+			cwd: () => process.cwd(),
+			now: () => new Date(),
+			promptForMissingInputs,
+			writeFile: vi.fn(),
+		});
+
+		await program.parseAsync(
+			["node", "azdo-work-items", "--queryId", "flag-query", "--inline"],
+			{
+				from: "node",
+			},
+		);
+
+		expect(promptForMissingInputs).toHaveBeenCalledWith({
+			fileName: undefined,
+			format: undefined,
+			inline: true,
+			queryId: "flag-query",
+		});
 	});
 });

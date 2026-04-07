@@ -2,10 +2,25 @@ import path from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 
 import { CliError } from "./errors.js";
-import type { ExportOptions, OutputFormat } from "./types/index.js";
+import type {
+	ExportInputs,
+	ExportOptions,
+	OutputFormat,
+	OutputTarget,
+} from "./types/index.js";
 
 function getExpectedExtension(format: OutputFormat): ".json" | ".md" {
 	return format === "json" ? ".json" : ".md";
+}
+
+export function normalizeOutputFormat(value: string): OutputFormat {
+	const normalized = value.trim().toLowerCase();
+
+	if (normalized === "json" || normalized === "md") {
+		return normalized;
+	}
+
+	throw new CliError("Output format must be either `json` or `md`.");
 }
 
 export function normalizeFileName(value: string, format: OutputFormat): string {
@@ -42,34 +57,109 @@ export function normalizeFileName(value: string, format: OutputFormat): string {
 	return trimmed;
 }
 
-export async function promptForExportOptions(): Promise<ExportOptions> {
-	const format = await select<OutputFormat>({
-		choices: [
-			{ name: "JSON", value: "json" },
-			{ name: "Markdown", value: "md" },
-		],
-		message: "Choose an output format",
-	});
+export function normalizeQueryId(value: string): string {
+	const trimmed = value.trim();
+
+	if (!trimmed) {
+		throw new CliError("Query ID cannot be empty.");
+	}
+
+	return trimmed;
+}
+
+function normalizeOutputTarget(inputs: ExportInputs): OutputTarget | undefined {
+	if (inputs.inline === true) {
+		if (inputs.fileName) {
+			throw new CliError("`--inline` cannot be combined with `--fileName`.");
+		}
+
+		return "inline";
+	}
+
+	if (inputs.fileName) {
+		return "file";
+	}
+
+	return undefined;
+}
+
+export async function promptForMissingInputs(
+	inputs: ExportInputs,
+): Promise<{ queryId: string } & ExportOptions> {
+	const queryId = inputs.queryId
+		? normalizeQueryId(inputs.queryId)
+		: normalizeQueryId(
+				await input({
+					message: "Enter the Azure DevOps query ID",
+					validate: (value) => {
+						try {
+							normalizeQueryId(value);
+							return true;
+						} catch (error) {
+							return error instanceof Error
+								? error.message
+								: "Invalid query ID.";
+						}
+					},
+				}),
+			);
+
+	const format =
+		(inputs.format ? normalizeOutputFormat(inputs.format) : undefined) ??
+		(await select<OutputFormat>({
+			choices: [
+				{ name: "JSON", value: "json" },
+				{ name: "Markdown", value: "md" },
+			],
+			message: "Choose an output format",
+		}));
+
+	const outputTarget =
+		normalizeOutputTarget(inputs) ??
+		(await select<OutputTarget>({
+			choices: [
+				{ name: "Write to file", value: "file" },
+				{ name: "Print in terminal", value: "inline" },
+			],
+			message: "Choose an output target",
+		}));
+
+	if (outputTarget === "inline") {
+		return {
+			format,
+			outputTarget,
+			queryId,
+		};
+	}
 
 	const defaultFileName =
 		format === "json" ? "work-items.json" : "work-items.md";
 
-	const fileName = await input({
-		default: defaultFileName,
-		message: "Enter an output file name",
-		validate: (value) => {
-			try {
-				normalizeFileName(value, format);
-				return true;
-			} catch (error) {
-				return error instanceof Error ? error.message : "Invalid file name.";
-			}
-		},
-	});
+	const fileName = inputs.fileName
+		? normalizeFileName(inputs.fileName, format)
+		: normalizeFileName(
+				await input({
+					default: defaultFileName,
+					message: "Enter an output file name",
+					validate: (value) => {
+						try {
+							normalizeFileName(value, format);
+							return true;
+						} catch (error) {
+							return error instanceof Error
+								? error.message
+								: "Invalid file name.";
+						}
+					},
+				}),
+				format,
+			);
 
 	return {
 		fileName: normalizeFileName(fileName, format),
 		format,
+		outputTarget,
+		queryId,
 	};
 }
 
