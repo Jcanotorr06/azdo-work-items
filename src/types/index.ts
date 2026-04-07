@@ -1,4 +1,5 @@
 export type OutputFormat = "json" | "md";
+export type OutputTarget = "file" | "inline";
 
 export type QueryWorkItemRef = {
 	id: number;
@@ -36,6 +37,14 @@ export type ExportResult = {
 };
 
 export type ExportOptions = {
-	fileName: string;
 	format: OutputFormat;
+	outputTarget: OutputTarget;
+	fileName?: string;
+};
+
+export type ExportInputs = {
+	fileName?: string;
+	format?: OutputFormat;
+	inline?: boolean;
+	queryId?: string;
 };
